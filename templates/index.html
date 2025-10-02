@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deribit BTC Option Chain</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        .tab-container { margin-bottom: 20px; }
+        .tab { display: inline-block; padding: 10px; cursor: pointer; border: 1px solid #ccc; }
+        .tab.active { background-color: #ccc; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: right; }
+        th { background-color: #f2f2f2; }
+        .strike { text-align: center; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Deribit BTC Option Chain Dashboard</h1>
+    <div id="tabs" class="tab-container"></div>
+    <div id="dashboard"></div>
+
+    <script>
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        const optionChainData = {};
+
+        ws.onmessage = function(event) {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'instruments') {
+                setupTabs(message.data);
+                // Pre-populate the data structure
+                message.data.forEach(instrumentName => {
+                    const parts = instrumentName.split('-');
+                    const expiryDate = parts[1];
+                    if (!optionChainData[expiryDate]) {
+                        optionChainData[expiryDate] = { calls: {}, puts: {} };
+                    }
+                });
+            } else if (message.params && message.params.channel.startsWith('ticker.')) {
+                updateOptionData(message.params.data);
+            }
+        };
+
+        function setupTabs(instruments) {
+            const expiries = [...new Set(instruments.map(inst => inst.split('-')[1]))].sort();
+            const tabsContainer = document.getElementById('tabs');
+            expiries.forEach((expiry, index) => {
+                const tab = document.createElement('div');
+                tab.className = 'tab';
+                tab.textContent = expiry;
+                tab.onclick = () => {
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    renderDashboard(expiry);
+                };
+                tabsContainer.appendChild(tab);
+                if (index === 0) {
+                    tab.click();
+                }
+            });
+        }
+
+        function updateOptionData(tickerData) {
+            const instrumentName = tickerData.instrument_name;
+            const parts = instrumentName.split('-');
+            const expiryDate = parts[1];
+            const strike = parseFloat(parts[2]);
+            const optionType = parts[3];
+
+            const data = {
+                iv: tickerData.mark_iv,
+                delta: tickerData.greeks ? tickerData.greeks.delta : 0,
+                oi: tickerData.open_interest,
+                ltp: tickerData.last_price,
+            };
+
+            if (optionType === 'C') {
+                optionChainData[expiryDate].calls[strike] = data;
+            } else {
+                optionChainData[expiryDate].puts[strike] = data;
+            }
+        }
+
+        function renderDashboard(expiry) {
+            const dashboard = document.getElementById('dashboard');
+            const data = optionChainData[expiry];
+            if (!data) return;
+
+            let tableHtml = `
+                <table>
+                    <tr>
+                        <th>IV (C)</th><th>Delta (C)</th><th>OI (C)</th><th>LTP (C)</th>
+                        <th class="strike">Strike</th>
+                        <th>LTP (P)</th><th>OI (P)</th><th>Delta (P)</th><th>IV (P)</th>
+                    </tr>
+            `;
+
+            const allStrikes = [...new Set([...Object.keys(data.calls), ...Object.keys(data.puts)])].map(parseFloat).sort((a, b) => a - b);
+
+            for (const strike of allStrikes) {
+                const call = data.calls[strike] || {};
+                const put = data.puts[strike] || {};
+                tableHtml += `
+                    <tr>
+                        <td>${(call.iv || 0).toFixed(2)}</td>
+                        <td>${(call.delta || 0).toFixed(4)}</td>
+                        <td>${(call.oi || 0).toFixed(2)}</td>
+                        <td>${(call.ltp || 0).toFixed(2)}</td>
+                        <td class="strike">${strike}</td>
+                        <td>${(put.ltp || 0).toFixed(2)}</td>
+                        <td>${(put.oi || 0).toFixed(2)}</td>
+                        <td>${(put.delta || 0).toFixed(4)}</td>
+                        <td>${(put.iv || 0).toFixed(2)}</td>
+                    </tr>
+                `;
+            }
+
+            tableHtml += '</table>';
+            dashboard.innerHTML = tableHtml;
+        }
+
+        // Periodically re-render the active tab
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab.active');
+            if (activeTab) {
+                renderDashboard(activeTab.textContent);
+            }
+        }, 2000);
+
+    </script>
+</body>
+</html>
